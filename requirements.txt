@@ -1,0 +1,15 @@
+# Core LangChain packages (community-first setup)
+langchain-core
+langchain-community
+langchain-text-splitters
+
+# Integrations (kept separate in newer LangChain releases)
+langchain-chroma
+langchain-huggingface
+langchain-ollama
+
+# Local vector store
+chromadb
+
+# CPU embeddings backend for HuggingFaceEmbeddings
+sentence-transformers

@@ -201,6 +201,18 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# macOS
+.DS_Store
+
+# Chroma persistence (generated)
+chroma_db/
+
+# Local book text (do not commit)
+data/*.txt
+
+# Python cache
+__pycache__/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
