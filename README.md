@@ -4,7 +4,7 @@ Local Retrieval-Augmented Generation (RAG) over **A Game of Thrones** (plain tex
 
 - **Embeddings:** `sentence-transformers/all-MiniLM-L6-v2` (CPU)
 - **Vector DB:** Chroma (persisted locally)
-- **LLM:** Groq via `ChatGroq` (`llama3-8b-8192`)
+- **LLM:** Groq via `ChatGroq` (`llama-3.1-8b-instant`)
 - **UI:** Streamlit chat app
 
 ## What you get

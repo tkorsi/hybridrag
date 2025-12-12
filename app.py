@@ -2,7 +2,7 @@
 
 Deployable to Streamlit Cloud:
   - UI: Streamlit chat interface
-  - LLM: Groq via `langchain-groq` (model: llama3-8b-8192)
+  - LLM: Groq via `langchain-groq` (model: llama-3.1-8b-instant)
   - Retrieval: Chroma (local persistence) + HuggingFaceEmbeddings (CPU)
 
 This app routes queries into two paths:
@@ -35,7 +35,7 @@ BOOK_PATH = Path("data/game_of_thrones.txt")
 CHROMA_DIR = Path("chroma_db")
 COLLECTION_NAME = "game_of_thrones"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-GROQ_MODEL = "llama3-8b-8192"
+GROQ_MODEL = "llama-3.1-8b-instant"
 
 SYSTEM_PROMPT = (
     "You are a Maester of the Citadel. "
@@ -250,10 +250,10 @@ def build_llm() -> Any:
     from langchain_groq import ChatGroq
 
     try:
-        return ChatGroq(api_key=api_key, model=GROQ_MODEL, temperature=0)
+        return ChatGroq(groq_api_key=api_key, model_name=GROQ_MODEL, temperature=0)
     except TypeError:
         # Compatibility with older parameter names
-        return ChatGroq(groq_api_key=api_key, model_name=GROQ_MODEL, temperature=0)
+        return ChatGroq(api_key=api_key, model_name=GROQ_MODEL, temperature=0)
 
 
 @st.cache_resource(show_spinner="Loading vector database…")
