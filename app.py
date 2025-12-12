@@ -300,7 +300,7 @@ def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str
     n = parse_top_n(question, default=5)
     top = counts.most_common(n)
     if not top:
-        return "No name-like entities were detected by the heuristic."
+        return f"No PERSON entities were detected (source: {result.backend})."
 
     lines = [f"Top **{n}** most-mentioned characters (approx):", ""]
     for name, count in top:
