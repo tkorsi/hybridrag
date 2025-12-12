@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 import os
+import logging
 
 # Streamlit Cloud may ship with an older system SQLite build, which can break Chroma.
 # If available, prefer the bundled `pysqlite3` (installed via `pysqlite3-binary`).
@@ -31,6 +32,7 @@ from typing import Any, Iterable
 
 import streamlit as st
 
+logger = logging.getLogger(__name__)
 
 BOOK_PATH = Path("data/game_of_thrones.txt")
 CHROMA_DIR = Path("chroma_db")
@@ -134,7 +136,21 @@ STOPWORDS = {
     "You",
 }
 
-TITLES = {"Ser", "Lord", "Lady", "King", "Queen", "Prince", "Princess", "Maester", "Septa", "Septon"}
+TITLES = [
+    "Ser",
+    "Lord",
+    "Lady",
+    "King",
+    "Queen",
+    "Princess",
+    "Prince",
+    "Maester",
+    "Khal",
+    "Khaleesi",
+    "Father",
+    "Brother",
+    "Uncle",
+]
 
 
 def normalize_name(name: str) -> str:
@@ -145,6 +161,7 @@ def normalize_name(name: str) -> str:
 
 STOPWORDS_LOWER = {w.lower() for w in STOPWORDS}
 TITLES_LOWER = {t.lower() for t in TITLES}
+CANONICAL_TITLES = {t.lower(): t for t in TITLES}
 NAME_PART_RE = re.compile(r"[A-Za-z][A-Za-z'-]+")
 
 
@@ -216,7 +233,7 @@ def clean_person_name(name: str) -> str:
     name = re.sub(r"(?:'s|’s)$", "", name).strip()
 
     first = name.split(" ", 1)[0] if name else ""
-    if first in TITLES:
+    if first.lower() in TITLES_LOWER:
         name = name.split(" ", 1)[1] if " " in name else ""
 
     return name.strip()
@@ -317,6 +334,77 @@ def analyze_text_spacy(full_text: str) -> Counter[str]:
     return Counter({display_names[k]: v for k, v in counts_lower.items()})
 
 
+def matches_target_person(entity_name: str, target_name: str) -> bool:
+    """Return True if an extracted PERSON entity likely refers to the target name.
+
+    Uses the existing "significant token" logic and first-name priority to avoid overcounting.
+    """
+    target_parts = significant_name_parts(target_name)
+    if not target_parts:
+        return False
+
+    entity_parts = significant_name_parts(entity_name)
+    if not entity_parts:
+        return False
+
+    if len(target_parts) > 1:
+        return target_parts[0] in entity_parts
+
+    return bool(set(target_parts).intersection(entity_parts))
+
+
+def analyze_text_spacy_for_target(full_text: str, target_name: str) -> Counter[str]:
+    """Count matching PERSON mentions with honorific expansion.
+
+    For PERSON entities that match `target_name`, check the immediately preceding token; if it
+    is a known title/honorific, prepend it so variants like "Lady Arya" are preserved.
+    """
+    nlp_result = load_spacy_model()
+    if nlp_result.nlp is None:
+        raise RuntimeError(nlp_result.note or "spaCy model unavailable.")
+    nlp = nlp_result.nlp
+
+    counts_lower: Counter[str] = Counter()
+    display_names: dict[str, str] = {}
+
+    for doc in nlp.pipe(iter_chunks(full_text, SPACY_CHARS_PER_CHUNK), batch_size=4):
+        for ent in doc.ents:
+            if ent.label_ != "PERSON":
+                continue
+
+            # Preserve a title if spaCy includes it inside the entity span.
+            raw = ent.text.strip(" \t\n\r\"'()[]{}-:;.,!?")
+            if not raw:
+                continue
+
+            ent_title: str | None = None
+            first, rest = (raw.split(" ", 1) + [""])[:2]
+            if rest and first.lower() in TITLES_LOWER:
+                ent_title = CANONICAL_TITLES.get(first.lower())
+                raw = rest
+
+            base_name = clean_person_name(raw)
+            if not base_name:
+                continue
+
+            if not matches_target_person(base_name, target_name):
+                continue
+
+            title = ent_title
+            if ent.start > 0:
+                prev = doc[ent.start - 1].text.strip(" \t\n\r\"'()[]{}-:;.,!?")
+                if prev.lower() in TITLES_LOWER:
+                    title = CANONICAL_TITLES.get(prev.lower(), prev)
+
+            name = f"{title} {base_name}" if title else base_name
+
+            key = name.lower()
+            counts_lower[key] += 1
+            display_names.setdefault(key, name)
+
+    return Counter({display_names[k]: v for k, v in counts_lower.items()})
+
+
 def analyze_text_regex_heuristic(full_text: str) -> Counter[str]:
     """Fallback name frequency heuristic (used when spaCy isn't available)."""
     counts: Counter[str] = Counter()
@@ -380,20 +468,33 @@ def cached_analyze_text(book_path: str, book_mtime: float) -> AnalyticsResult:
     return analyze_text(full_text)
 
 
-def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str:
-    result = cached_analyze_text(book_path, book_mtime)
-    counts = result.counts
+@st.cache_data(show_spinner=False)
+def cached_regex_counts(book_path: str, book_mtime: float) -> Counter[str]:
+    _ = book_mtime  # cache-buster when the file changes
+    full_text = load_book_text(book_path)
+    return analyze_text_regex_heuristic(full_text)
 
-    footer = f"_Count source: {result.backend}._"
-    if result.note:
-        footer += f"\n\n_Note: {result.note}_"
 
+@st.cache_data(show_spinner=False)
+def cached_spacy_counts(book_path: str, book_mtime: float) -> Counter[str]:
+    _ = book_mtime  # cache-buster when the file changes
+    full_text = load_book_text(book_path)
+    return analyze_text_spacy(full_text)
+
+
+@st.cache_data(show_spinner=False)
+def cached_spacy_counts_for_target(book_path: str, book_mtime: float, target_name: str) -> Counter[str]:
+    _ = book_mtime  # cache-buster when the file changes
+    full_text = load_book_text(book_path)
+    return analyze_text_spacy_for_target(full_text, target_name)
+
+
+def compute_analytics_metrics(question: str, counts: Counter[str]) -> dict[str, Any]:
     requested_name = extract_name_for_count(question)
     if requested_name:
         direct, matched_variants, chosen_tokens = get_counts(counts, requested_name)
         suggestions: list[str] = []
         if direct == 0:
-            # Suggest close variants by token overlap.
             requested_parts = set(significant_name_parts(requested_name))
             if requested_parts:
                 suggestions = [
@@ -401,40 +502,95 @@ def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str
                     for k in counts.keys()
                     if set(significant_name_parts(k)).intersection(requested_parts)
                 ][:5]
-        return (
-            f"Mentions of **{requested_name}** (approx): **{direct}**\n\n"
-            + (
-                f"Matched on tokens: {', '.join(f'`{t}`' for t in chosen_tokens)}\n\n"
-                if chosen_tokens
-                else ""
-            )
-            + (
-                "Counted variants: "
-                + ", ".join(f"`{v}`" for v in matched_variants[:8])
-                + ("\n\n" if matched_variants else "")
-            )
-            + (f"Did you mean: {', '.join(f'`{s}`' for s in suggestions)}\n\n" if suggestions else "")
-            + footer
-        )
+        return {
+            "kind": "count",
+            "requested_name": requested_name,
+            "count": direct,
+            "tokens": chosen_tokens,
+            "variants": matched_variants,
+            "suggestions": suggestions,
+        }
 
     if re.search(r"\bhow many\b.*\bcharacters\b", question, re.IGNORECASE):
         unique_est = sum(1 for _, c in counts.items() if c >= 5)
-        return (
-            "Approximate unique characters (>= 5 PERSON mentions): "
-            f"**{unique_est}**\n\n{footer}"
-        )
+        return {"kind": "how_many", "unique_est": unique_est}
 
     n = parse_top_n(question, default=5)
     top = counts.most_common(n)
-    if not top:
-        return f"No PERSON entities were detected.\n\n{footer}"
+    return {"kind": "top", "n": n, "top": top}
 
-    lines = [f"Top **{n}** most-mentioned characters (approx):", ""]
-    for name, count in top:
-        lines.append(f"- **{name}**: {count}")
+
+def format_analytics_markdown(
+    metrics: dict[str, Any],
+    *,
+    heading: str,
+    backend: str,
+    note: str | None = None,
+    refining: bool = False,
+    delta: int | None = None,
+) -> str:
+    footer = f"_Count source: {backend}._"
+    if note:
+        footer += f"\n\n_Note: {note}_"
+
+    kind = metrics.get("kind")
+    lines: list[str] = []
+
+    if kind == "count":
+        requested = metrics.get("requested_name", "")
+        count = int(metrics.get("count", 0))
+        line = f"{heading}: **{count}** mentions of **{requested}**"
+        if refining:
+            line += " _(Refining with AI...)_"
+        lines.append(line)
+
+        if delta is not None and delta != 0:
+            sign = "+" if delta > 0 else ""
+            lines.append(f"Difference vs estimate: `{sign}{delta}`")
+
+        tokens: list[str] = metrics.get("tokens") or []
+        if tokens:
+            lines.append(f"Matched tokens: {', '.join(f'`{t}`' for t in tokens)}")
+
+        variants: list[str] = metrics.get("variants") or []
+        if variants:
+            lines.append("Counted variants: " + ", ".join(f"`{v}`" for v in variants[:8]))
+
+        suggestions: list[str] = metrics.get("suggestions") or []
+        if suggestions:
+            lines.append("Did you mean: " + ", ".join(f"`{s}`" for s in suggestions))
+
+    elif kind == "how_many":
+        unique_est = int(metrics.get("unique_est", 0))
+        line = f"{heading}: **{unique_est}** unique characters (>= 5 mentions)"
+        if refining:
+            line += " _(Refining with AI...)_"
+        lines.append(line)
+
+    else:  # "top"
+        n = int(metrics.get("n", 5))
+        top: list[tuple[str, int]] = metrics.get("top") or []
+        line = f"{heading}: Top **{n}** most-mentioned characters"
+        if refining:
+            line += " _(Refining with AI...)_"
+        lines.append(line)
+        lines.append("")
+        if not top:
+            lines.append("No entities were detected.")
+        else:
+            for name, count in top:
+                lines.append(f"- **{name}**: {count}")
+
     lines.append("")
     lines.append(footer)
-    return "\n".join(lines)
+    return "\n".join(lines).strip()
+
+
+def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str:
+    result = cached_analyze_text(book_path, book_mtime)
+    metrics = compute_analytics_metrics(question, result.counts)
+    heading = "Analytics"
+    return format_analytics_markdown(metrics, heading=heading, backend=result.backend, note=result.note)
 
 
 def format_docs(docs: Iterable[Any]) -> str:
@@ -609,14 +765,68 @@ def main() -> None:
                         f"Analytics requires the full book text at `{cfg.book_path}`.\n\n"
                         "Provide the file (or change the path in the sidebar) and try again."
                     )
+                    st.markdown(answer)
                 else:
                     book_mtime = book_file.stat().st_mtime
-                    answer = answer_analytics(
-                        question=question,
-                        book_path=cfg.book_path,
-                        book_mtime=book_mtime,
+                    placeholder = st.empty()
+
+                    # Step 1 (fast): regex estimate first.
+                    regex_counts = cached_regex_counts(cfg.book_path, book_mtime)
+                    regex_metrics = compute_analytics_metrics(question, regex_counts)
+                    estimate_md = format_analytics_markdown(
+                        regex_metrics,
+                        heading="⚡ Estimate (Regex)",
+                        backend="Regex heuristic",
+                        refining=True,
                     )
-                st.markdown(answer)
+                    placeholder.markdown(estimate_md)
+                    answer = estimate_md
+
+                    # Step 2 (slow): spaCy refinement (if available).
+                    try:
+                        with st.spinner("Running deep analysis..."):
+                            if regex_metrics.get("kind") == "count":
+                                target_name = str(regex_metrics.get("requested_name") or "").strip()
+                                spacy_counts = cached_spacy_counts_for_target(cfg.book_path, book_mtime, target_name)
+                            else:
+                                spacy_counts = cached_spacy_counts(cfg.book_path, book_mtime)
+                        spacy_metrics = compute_analytics_metrics(question, spacy_counts)
+
+                        delta: int | None = None
+                        if regex_metrics.get("kind") == "count" and spacy_metrics.get("kind") == "count":
+                            delta_value = int(spacy_metrics.get("count", 0)) - int(
+                                regex_metrics.get("count", 0)
+                            )
+                            if abs(delta_value) >= 5 or (
+                                int(regex_metrics.get("count", 0)) == 0
+                                and int(spacy_metrics.get("count", 0)) > 0
+                            ):
+                                delta = delta_value
+
+                        heading = (
+                            "✅ Accurate Count (spaCy)"
+                            if spacy_metrics.get("kind") == "count"
+                            else "✅ Accurate (spaCy)"
+                        )
+                        final_md = format_analytics_markdown(
+                            spacy_metrics,
+                            heading=heading,
+                            backend="spaCy PERSON NER",
+                            delta=delta,
+                        )
+                        placeholder.markdown(final_md)
+                        answer = final_md
+                    except Exception as exc:
+                        logger.exception("Deep analysis failed; serving regex estimate.")
+                        final_md = format_analytics_markdown(
+                            regex_metrics,
+                            heading="⚡ Estimate (Regex)",
+                            backend="Regex heuristic",
+                            refining=False,
+                            note=f"Deep analysis unavailable; showing estimate only. ({type(exc).__name__})",
+                        )
+                        placeholder.markdown(final_md)
+                        answer = final_md
             else:
                 vectorstore = get_vectorstore(
                     persist_dir=cfg.persist_dir,
