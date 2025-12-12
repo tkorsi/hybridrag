@@ -232,6 +232,7 @@ def analyze_text_regex_heuristic(full_text: str) -> Counter[str]:
 class AnalyticsResult:
     backend: str
     counts: Counter[str]
+    note: str | None = None
 
 
 def analyze_text(full_text: str) -> AnalyticsResult:
@@ -241,17 +242,21 @@ def analyze_text(full_text: str) -> AnalyticsResult:
     """
     if _spacy_installed():
         try:
-            return AnalyticsResult(backend="spaCy PERSON NER", counts=analyze_text_spacy(full_text))
-        except Exception as exc:
-            # If the model is missing or spaCy errors, fall back rather than failing the app.
             return AnalyticsResult(
-                backend=f"Regex heuristic (spaCy unavailable: {exc})",
+                backend="spaCy PERSON NER",
+                counts=analyze_text_spacy(full_text),
+            )
+        except Exception as exc:
+            return AnalyticsResult(
+                backend="Regex heuristic",
                 counts=analyze_text_regex_heuristic(full_text),
+                note=f"spaCy unavailable ({type(exc).__name__}). Install `spacy` + `{SPACY_MODEL_NAME}` for PERSON-only counts.",
             )
 
     return AnalyticsResult(
-        backend="Regex heuristic (spaCy not installed)",
+        backend="Regex heuristic",
         counts=analyze_text_regex_heuristic(full_text),
+        note=f"Install `spacy` + `{SPACY_MODEL_NAME}` for PERSON-only counts.",
     )
 
 
@@ -271,6 +276,10 @@ def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str
     result = cached_analyze_text(book_path, book_mtime)
     counts = result.counts
 
+    footer = f"_Count source: {result.backend}._"
+    if result.note:
+        footer += f"\n\n_Note: {result.note}_"
+
     requested_name = extract_name_for_count(question)
     if requested_name:
         direct = counts.get(requested_name, 0)
@@ -287,26 +296,26 @@ def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str
         return (
             f"Mentions of **{requested_name}** (approx): **{direct}**\n\n"
             + (f"Did you mean: {', '.join(f'`{s}`' for s in suggestions)}\n\n" if suggestions else "")
-            + f"_Count source: {result.backend}._"
+            + footer
         )
 
     if re.search(r"\bhow many\b.*\bcharacters\b", question, re.IGNORECASE):
         unique_est = sum(1 for _, c in counts.items() if c >= 5)
         return (
             "Approximate unique characters (>= 5 PERSON mentions): "
-            f"**{unique_est}**\n\n_Count source: {result.backend}._"
+            f"**{unique_est}**\n\n{footer}"
         )
 
     n = parse_top_n(question, default=5)
     top = counts.most_common(n)
     if not top:
-        return f"No PERSON entities were detected (source: {result.backend})."
+        return f"No PERSON entities were detected.\n\n{footer}"
 
     lines = [f"Top **{n}** most-mentioned characters (approx):", ""]
     for name, count in top:
         lines.append(f"- **{name}**: {count}")
     lines.append("")
-    lines.append(f"_Count source: {result.backend}._")
+    lines.append(footer)
     return "\n".join(lines)
 
 
