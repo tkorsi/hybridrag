@@ -179,6 +179,12 @@ def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
     import spacy
 
     try:
+        spacy_models_dir = Path(__file__).resolve().parent / "spacy_models"
+        if spacy_models_dir.exists():
+            spacy_models_dir_str = str(spacy_models_dir)
+            if spacy_models_dir_str not in sys.path:
+                sys.path.insert(0, spacy_models_dir_str)
+
         nlp = spacy.load(
             model_name,
             disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
@@ -188,8 +194,9 @@ def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
         return SpacyNlpResult(
             nlp=None,
             note=(
-                f"spaCy model '{model_name}' is not installed. "
-                f"Run `python preload.py` (recommended) or `python -m spacy download {model_name}`."
+                f"spaCy model '{model_name}' was not found. "
+                "Ensure it is available in the pre-built environment (installed) "
+                "or committed under `spacy_models/`."
             ),
         )
     except Exception as exc:
@@ -382,56 +389,36 @@ def build_llm() -> Any:
 
 
 @st.cache_resource(show_spinner="Loading vector database…")
-def get_vectorstore(*, book_path: str, persist_dir: str, collection: str, embedding_model: str, book_mtime: float) -> Any:
-    """Load persisted Chroma if present, otherwise build it once and persist it."""
+def get_vectorstore(*, persist_dir: str, collection: str, embedding_model: str) -> Any:
+    """Load a persisted Chroma vector store.
+
+    This app is designed for a pre-built deployment: the Chroma persistence directory
+    should already exist (e.g., committed by CI) so Streamlit doesn't have to build it.
+    """
     from langchain_chroma import Chroma
-    from langchain_core.documents import Document
     from langchain_huggingface import HuggingFaceEmbeddings
-    from langchain_text_splitters import RecursiveCharacterTextSplitter
 
     embeddings = HuggingFaceEmbeddings(model_name=embedding_model, model_kwargs={"device": "cpu"})
 
     persist_path = Path(persist_dir)
-    persist_path.mkdir(parents=True, exist_ok=True)
-
-    if any(persist_path.iterdir()):
-        try:
-            return Chroma(
-                collection_name=collection,
-                persist_directory=str(persist_path),
-                embedding_function=embeddings,
-            )
-        except TypeError:
-            return Chroma(
-                collection_name=collection,
-                persist_directory=str(persist_path),
-                embedding=embeddings,
-            )
-
-    text = load_book_text(book_path)
-    doc = Document(page_content=text, metadata={"source": book_path})
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-    chunks = splitter.split_documents([doc])
+    if not persist_path.exists() or not any(persist_path.iterdir()):
+        raise FileNotFoundError(
+            f"Chroma persistence directory is missing/empty: {persist_path}. "
+            "Run `python ingest.py` to generate `./chroma_db` (or ensure CI committed prebuilt artifacts)."
+        )
 
     try:
-        vectorstore = Chroma.from_documents(
-            documents=chunks,
-            embedding=embeddings,
-            persist_directory=str(persist_path),
+        return Chroma(
             collection_name=collection,
+            persist_directory=str(persist_path),
+            embedding_function=embeddings,
         )
     except TypeError:
-        vectorstore = Chroma.from_documents(
-            documents=chunks,
-            embedding_function=embeddings,
-            persist_directory=str(persist_path),
+        return Chroma(
             collection_name=collection,
+            persist_directory=str(persist_path),
+            embedding=embeddings,
         )
-
-    persist = getattr(vectorstore, "persist", None)
-    if callable(persist):
-        persist()
-    return vectorstore
 
 
 @st.cache_resource(show_spinner=False)
@@ -494,12 +481,13 @@ def main() -> None:
     cfg = render_sidebar()
 
     book_file = Path(cfg.book_path)
-    if not book_file.exists():
-        st.error(
-            f"Book text file not found at `{cfg.book_path}`.\n\n"
-            "Add the file (e.g. `data/game_of_thrones.txt`) or update the path in the sidebar."
+    book_available = book_file.exists()
+    if not book_available:
+        st.warning(
+            f"Book text file not found at `{cfg.book_path}`. "
+            "Semantic (RAG) queries can still work if `./chroma_db` is present, "
+            "but analytics queries require the full text."
         )
-        st.stop()
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -519,21 +507,24 @@ def main() -> None:
     with st.chat_message("assistant"):
         try:
             if is_analytics_query(question):
-                book_mtime = book_file.stat().st_mtime
-                answer = answer_analytics(
-                    question=question,
-                    book_path=cfg.book_path,
-                    book_mtime=book_mtime,
-                )
+                if not book_available:
+                    answer = (
+                        f"Analytics requires the full book text at `{cfg.book_path}`.\n\n"
+                        "Provide the file (or change the path in the sidebar) and try again."
+                    )
+                else:
+                    book_mtime = book_file.stat().st_mtime
+                    answer = answer_analytics(
+                        question=question,
+                        book_path=cfg.book_path,
+                        book_mtime=book_mtime,
+                    )
                 st.markdown(answer)
             else:
-                book_mtime = book_file.stat().st_mtime
                 vectorstore = get_vectorstore(
-                    book_path=cfg.book_path,
                     persist_dir=cfg.persist_dir,
                     collection=cfg.collection,
                     embedding_model=cfg.embedding_model,
-                    book_mtime=book_mtime,
                 )
 
                 k = cfg.bio_k if is_biography_query(question) else cfg.k

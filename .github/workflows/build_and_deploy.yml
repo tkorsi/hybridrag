@@ -1,0 +1,75 @@
+name: Build and commit prebuilt artifacts
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  prebuild:
+    # Avoid infinite loop: commits pushed by this workflow re-trigger `push`,
+    # but will have `github-actions[bot]` as the actor.
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download spaCy model
+        run: |
+          python -m spacy download en_core_web_sm
+
+      - name: Save spaCy model into repo (spacy_models/)
+        run: |
+          python - <<'PY'
+          import shutil
+          from pathlib import Path
+
+          import en_core_web_sm
+
+          src = Path(en_core_web_sm.__file__).resolve().parent
+          dst = Path("spacy_models") / "en_core_web_sm"
+          if dst.exists():
+              shutil.rmtree(dst)
+          dst.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copytree(src, dst)
+          print(f"Copied spaCy model package: {src} -> {dst}")
+          PY
+
+      - name: Build vector store (Chroma)
+        run: |
+          rm -rf chroma_db
+          python ingest.py
+
+      - name: Commit and push artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add -A -f chroma_db spacy_models/en_core_web_sm
+
+          if git diff --cached --quiet; then
+            echo "No artifact changes to commit."
+            exit 0
+          fi
+
+          git commit -m "chore: update prebuilt artifacts"
+          git push
+
