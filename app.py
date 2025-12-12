@@ -24,7 +24,7 @@ except Exception:
     pass
 
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -141,6 +141,68 @@ def normalize_name(name: str) -> str:
     name = name.strip()
     name = re.sub(r"\s+", " ", name)
     return name
+
+
+STOPWORDS_LOWER = {w.lower() for w in STOPWORDS}
+TITLES_LOWER = {t.lower() for t in TITLES}
+NAME_PART_RE = re.compile(r"[A-Za-z][A-Za-z'-]+")
+
+
+def significant_name_parts(text: str) -> list[str]:
+    """Extract "significant" name parts from user input or entity text.
+
+    Used for fuzzy matching in analytics (e.g., "Arya Stark" should match "Arya").
+    """
+    parts = [p.strip("'-").lower() for p in NAME_PART_RE.findall(text)]
+    return [
+        p
+        for p in parts
+        if len(p) > 1 and p not in STOPWORDS_LOWER and p not in TITLES_LOWER
+    ]
+
+
+def get_counts(counts: Counter[str], target_name: str, *, ambiguity_threshold: int = 2) -> tuple[int, list[str], list[str]]:
+    """Return a fuzzy mention count for a target character name.
+
+    Matching strategy:
+      - Split `target_name` into significant tokens (e.g., ["arya", "stark"]).
+      - Always include the first token (first-name priority).
+      - Include additional tokens only if they are not ambiguous across many entities
+        (e.g., "stark" appears in many names, so it is often too broad).
+      - Count any PERSON entity whose token set overlaps with the chosen tokens.
+    """
+    target_name = normalize_name(target_name)
+    target_parts = significant_name_parts(target_name)
+    if not target_parts:
+        return 0, [], []
+
+    # Build an index of which entity-names contain which tokens (case-insensitive).
+    token_to_entities: dict[str, set[str]] = defaultdict(set)
+    entity_tokens: dict[str, set[str]] = {}
+    for entity in counts.keys():
+        tokens = set(significant_name_parts(entity))
+        entity_tokens[entity] = tokens
+        for t in tokens:
+            token_to_entities[t].add(entity)
+
+    primary = target_parts[0]
+    chosen_tokens: list[str] = [primary]
+
+    if len(target_parts) > 1:
+        for token in target_parts[1:]:
+            if len(token_to_entities.get(token, set())) <= ambiguity_threshold:
+                chosen_tokens.append(token)
+
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    chosen_tokens = [t for t in chosen_tokens if not (t in seen or seen.add(t))]
+
+    matched_entities = [e for e, toks in entity_tokens.items() if toks.intersection(chosen_tokens)]
+    total = sum(counts[e] for e in matched_entities)
+
+    # Prefer showing more frequent variants first.
+    matched_entities.sort(key=lambda e: counts[e], reverse=True)
+    return total, matched_entities, chosen_tokens
 
 
 def iter_chunks(text: str, size: int) -> Iterable[str]:
@@ -328,19 +390,29 @@ def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str
 
     requested_name = extract_name_for_count(question)
     if requested_name:
-        direct = counts.get(requested_name, 0)
+        direct, matched_variants, chosen_tokens = get_counts(counts, requested_name)
+        suggestions: list[str] = []
         if direct == 0:
-            lowered = requested_name.lower()
-            for k, v in counts.items():
-                if k.lower() == lowered:
-                    direct = v
-                    break
-        suggestions = []
-        if direct == 0:
-            lowered = requested_name.lower()
-            suggestions = [k for k in counts.keys() if lowered in k.lower()][:5]
+            # Suggest close variants by token overlap.
+            requested_parts = set(significant_name_parts(requested_name))
+            if requested_parts:
+                suggestions = [
+                    k
+                    for k in counts.keys()
+                    if set(significant_name_parts(k)).intersection(requested_parts)
+                ][:5]
         return (
             f"Mentions of **{requested_name}** (approx): **{direct}**\n\n"
+            + (
+                f"Matched on tokens: {', '.join(f'`{t}`' for t in chosen_tokens)}\n\n"
+                if chosen_tokens
+                else ""
+            )
+            + (
+                "Counted variants: "
+                + ", ".join(f"`{v}`" for v in matched_variants[:8])
+                + ("\n\n" if matched_variants else "")
+            )
             + (f"Did you mean: {', '.join(f'`{s}`' for s in suggestions)}\n\n" if suggestions else "")
             + footer
         )
