@@ -12,12 +12,12 @@ Local Retrieval-Augmented Generation (RAG) over **A Game of Thrones** (plain tex
 - **Semantic queries (RAG):** Ask questions like:
   - `List Ned Stark's children`
   - `Write a biography of Khal Drogo`
-- **Analytical queries (heuristic):** Quick approximations like:
+- **Analytical queries (spaCy when available):** Quick approximations like:
   - `Top 5 most mentioned characters`
   - `How many characters total?`
   - `Count mentions of Arya Stark`
 
-Analytical queries do **not** go through RAG. They use a local regex/`Counter` heuristic because RAG retrieval cannot reliably scan the entire book for global counts.
+Analytical queries do **not** go through RAG. If spaCy is available, the app counts `PERSON` entities; otherwise it falls back to a lightweight regex/`Counter` heuristic.
 
 ## Project layout
 
