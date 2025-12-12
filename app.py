@@ -82,6 +82,10 @@ def extract_name_for_count(question: str) -> str | None:
     return name or None
 
 
+SPACY_MODEL_NAME = "en_core_web_sm"
+SPACY_CHARS_PER_CHUNK = 100_000
+
+
 NAME_REGEX = re.compile(
     r"\b[A-Z][a-z]+(?:['-][A-Z][a-z]+)?(?:\s+[A-Z][a-z]+(?:['-][A-Z][a-z]+)?){0,2}\b"
 )
@@ -138,13 +142,76 @@ def normalize_name(name: str) -> str:
     return name
 
 
-def analyze_text(full_text: str) -> Counter[str]:
-    """Approximate character frequencies from raw text.
+def iter_chunks(text: str, size: int) -> Iterable[str]:
+    for start in range(0, len(text), size):
+        yield text[start : start + size]
 
-    This is heuristic: it counts "name-like" spans (capitalized words) and will have
-    false positives/negatives. It's intended for quick approximate analytics.
-    """
 
+def clean_person_name(name: str) -> str:
+    name = name.strip(" \t\n\r\"'()[]{}-:;.,!?")
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"(?:'s|’s)$", "", name).strip()
+
+    first = name.split(" ", 1)[0] if name else ""
+    if first in TITLES:
+        name = name.split(" ", 1)[1] if " " in name else ""
+
+    return name.strip()
+
+
+def _spacy_installed() -> bool:
+    try:
+        import spacy  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+@st.cache_resource(show_spinner="Loading spaCy NER model…")
+def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> Any:
+    import spacy
+
+    try:
+        return spacy.load(
+            model_name,
+            disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"spaCy is installed, but the model '{model_name}' is missing.\n\n"
+            "Install it locally with:\n"
+            "  python -m spacy download en_core_web_sm\n\n"
+            "On Streamlit Cloud, ensure the model is available in the build environment."
+        ) from exc
+
+
+def analyze_text_spacy(full_text: str) -> Counter[str]:
+    """Count PERSON entity mentions using spaCy NER (preferred)."""
+    nlp = get_spacy_nlp()
+
+    counts_lower: Counter[str] = Counter()
+    display_names: dict[str, str] = {}
+
+    for doc in nlp.pipe(iter_chunks(full_text, SPACY_CHARS_PER_CHUNK), batch_size=4):
+        for ent in doc.ents:
+            if ent.label_ != "PERSON":
+                continue
+
+            name = clean_person_name(ent.text)
+            if not name:
+                continue
+
+            key = name.lower()
+            counts_lower[key] += 1
+            display_names.setdefault(key, name)
+
+    # Present human-friendly casing while still aggregating case-insensitively.
+    return Counter({display_names[k]: v for k, v in counts_lower.items()})
+
+
+def analyze_text_regex_heuristic(full_text: str) -> Counter[str]:
+    """Fallback name frequency heuristic (used when spaCy isn't available)."""
     counts: Counter[str] = Counter()
     for match in NAME_REGEX.finditer(full_text):
         candidate = normalize_name(match.group(0))
@@ -161,18 +228,48 @@ def analyze_text(full_text: str) -> Counter[str]:
     return counts
 
 
+@dataclass(frozen=True)
+class AnalyticsResult:
+    backend: str
+    counts: Counter[str]
+
+
+def analyze_text(full_text: str) -> AnalyticsResult:
+    """Analyze character frequencies from the full book text.
+
+    Prefer spaCy PERSON NER when available; otherwise fall back to a regex heuristic.
+    """
+    if _spacy_installed():
+        try:
+            return AnalyticsResult(backend="spaCy PERSON NER", counts=analyze_text_spacy(full_text))
+        except Exception as exc:
+            # If the model is missing or spaCy errors, fall back rather than failing the app.
+            return AnalyticsResult(
+                backend=f"Regex heuristic (spaCy unavailable: {exc})",
+                counts=analyze_text_regex_heuristic(full_text),
+            )
+
+    return AnalyticsResult(
+        backend="Regex heuristic (spaCy not installed)",
+        counts=analyze_text_regex_heuristic(full_text),
+    )
+
+
 @st.cache_data(show_spinner=False)
 def load_book_text(book_path: str) -> str:
     return Path(book_path).read_text(encoding="utf-8", errors="replace")
 
 
 @st.cache_data(show_spinner="Analyzing the full text…")
-def cached_analyze_text(full_text: str) -> Counter[str]:
+def cached_analyze_text(book_path: str, book_mtime: float) -> AnalyticsResult:
+    _ = book_mtime  # cache-buster when the file changes
+    full_text = load_book_text(book_path)
     return analyze_text(full_text)
 
 
-def answer_analytics(question: str, full_text: str) -> str:
-    counts = cached_analyze_text(full_text)
+def answer_analytics(*, question: str, book_path: str, book_mtime: float) -> str:
+    result = cached_analyze_text(book_path, book_mtime)
+    counts = result.counts
 
     requested_name = extract_name_for_count(question)
     if requested_name:
@@ -183,16 +280,21 @@ def answer_analytics(question: str, full_text: str) -> str:
                 if k.lower() == lowered:
                     direct = v
                     break
+        suggestions = []
+        if direct == 0:
+            lowered = requested_name.lower()
+            suggestions = [k for k in counts.keys() if lowered in k.lower()][:5]
         return (
-            f"Approximate mentions of **{requested_name}**: **{direct}**\n\n"
-            "_Heuristic count; may be inaccurate._"
+            f"Mentions of **{requested_name}** (approx): **{direct}**\n\n"
+            + (f"Did you mean: {', '.join(f'`{s}`' for s in suggestions)}\n\n" if suggestions else "")
+            + f"_Count source: {result.backend}._"
         )
 
     if re.search(r"\bhow many\b.*\bcharacters\b", question, re.IGNORECASE):
         unique_est = sum(1 for _, c in counts.items() if c >= 5)
         return (
-            "Approximate unique character-like names (>= 5 mentions): "
-            f"**{unique_est}**\n\n_Heuristic estimate; may be inaccurate._"
+            "Approximate unique characters (>= 5 PERSON mentions): "
+            f"**{unique_est}**\n\n_Count source: {result.backend}._"
         )
 
     n = parse_top_n(question, default=5)
@@ -200,11 +302,11 @@ def answer_analytics(question: str, full_text: str) -> str:
     if not top:
         return "No name-like entities were detected by the heuristic."
 
-    lines = [f"Top **{n}** most-mentioned character-like names (heuristic):", ""]
+    lines = [f"Top **{n}** most-mentioned characters (approx):", ""]
     for name, count in top:
         lines.append(f"- **{name}**: {count}")
     lines.append("")
-    lines.append("_Heuristic ranking; may be inaccurate._")
+    lines.append(f"_Count source: {result.backend}._")
     return "\n".join(lines)
 
 
@@ -394,8 +496,12 @@ def main() -> None:
     with st.chat_message("assistant"):
         try:
             if is_analytics_query(question):
-                full_text = load_book_text(cfg.book_path)
-                answer = answer_analytics(question, full_text)
+                book_mtime = book_file.stat().st_mtime
+                answer = answer_analytics(
+                    question=question,
+                    book_path=cfg.book_path,
+                    book_mtime=book_mtime,
+                )
                 st.markdown(answer)
             else:
                 book_mtime = book_file.stat().st_mtime

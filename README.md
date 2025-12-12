@@ -109,7 +109,7 @@ Tune in the Streamlit sidebar:
 - `k (semantic)` (default 4)
 - `k (biography)` (default 7)
 
-## Analytics mode (heuristic)
+## Analytics mode (spaCy PERSON NER)
 
 Examples:
 
@@ -117,11 +117,19 @@ Examples:
 - `How many characters total?`
 - `Count mentions of Jon Snow`
 
-These are approximations based on regex-matched “name-like” spans and can be inaccurate (false positives/negatives).
+If `spacy` + `en_core_web_sm` are available, the app extracts and counts only `PERSON` entities.
+If spaCy isn't available, the app falls back to a lightweight regex heuristic.
 
-### Higher-quality alternative (spaCy NER)
+### spaCy setup
 
-There is an optional script:
+Install spaCy + the English model:
+
+```bash
+python -m pip install spacy
+python -m spacy download en_core_web_sm
+```
+
+There is also an optional script:
 
 - `count_names_spacy.py`
 
