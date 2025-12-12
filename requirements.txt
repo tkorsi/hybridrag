@@ -16,3 +16,6 @@ chromadb
 
 # CPU embeddings backend for HuggingFaceEmbeddings
 sentence-transformers
+
+# Streamlit Cloud workaround: bundle a newer SQLite for Chroma persistence
+pysqlite3-binary

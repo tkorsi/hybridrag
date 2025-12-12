@@ -12,6 +12,16 @@ This app routes queries into two paths:
 
 from __future__ import annotations
 
+import sys
+
+# Streamlit Cloud may ship with an older system SQLite build, which can break Chroma.
+# If available, prefer the bundled `pysqlite3` (installed via `pysqlite3-binary`).
+try:  # pragma: no cover
+    __import__("pysqlite3")
+    sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+except Exception:
+    pass
+
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -421,4 +431,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

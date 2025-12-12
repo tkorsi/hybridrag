@@ -137,6 +137,8 @@ python count_names_spacy.py
 
 - **Missing `GROQ_API_KEY`**
   - Set it in Streamlit Cloud secrets, or create `.streamlit/secrets.toml` locally.
+- **ChromaDB / SQLite errors on Streamlit Cloud**
+  - This repo includes `pysqlite3-binary` and `app.py` prefers it at runtime to avoid older system SQLite builds.
 - **Chroma index issues**
   - Delete `./chroma_db` and reload to rebuild, or run `python ingest.py --input data/game_of_thrones.txt`.
 - **Dependency import errors**
