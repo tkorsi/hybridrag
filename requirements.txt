@@ -6,7 +6,10 @@ langchain-text-splitters
 # Integrations (kept separate in newer LangChain releases)
 langchain-chroma
 langchain-huggingface
-langchain-ollama
+langchain-groq
+
+# Web UI
+streamlit
 
 # Local vector store
 chromadb

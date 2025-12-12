@@ -1,10 +1,11 @@
-# Game of Thrones RAG CLI (LangChain + Chroma + Ollama)
+# Game of Thrones RAG (Streamlit + LangChain + Chroma + Groq)
 
 Local Retrieval-Augmented Generation (RAG) over **A Game of Thrones** (plain text), with:
 
 - **Embeddings:** `sentence-transformers/all-MiniLM-L6-v2` (CPU)
 - **Vector DB:** Chroma (persisted locally)
-- **LLM:** `ChatOllama` (e.g. `llama3` or `mistral`) with a safe fallback if Ollama isn't available
+- **LLM:** Groq via `ChatGroq` (`llama3-8b-8192`)
+- **UI:** Streamlit chat app
 
 ## What you get
 
@@ -20,8 +21,8 @@ Analytical queries do **not** go through RAG. They use a local regex/`Counter` h
 
 ## Project layout
 
-- `ingest.py` — builds the persisted Chroma index in `./chroma_db`
-- `main.py` — interactive CLI for asking questions
+- `app.py` — Streamlit chat app
+- `ingest.py` — optional: build the persisted Chroma index in `./chroma_db`
 - `data/game_of_thrones.txt` — **you provide this file locally** (ignored by git)
 - `chroma_db/` — generated vector store (ignored by git)
 
@@ -44,41 +45,47 @@ python -m pip install -U pip
 python -m pip install -r requirements.txt
 ```
 
-> Note: `sentence-transformers` will download the embedding model the first time you run ingestion (network required for that initial download).
+> Note: `sentence-transformers` will download the embedding model the first time you build the index (network required for that initial download).
 
-## Ingest (build the vector store)
+## Configure Groq (required for semantic RAG answers)
+
+### Streamlit Cloud
+
+Set a secret named:
+
+- `GROQ_API_KEY`
+
+### Local development
+
+Create `.streamlit/secrets.toml` (not committed):
+
+```toml
+GROQ_API_KEY="YOUR_KEY_HERE"
+```
+
+## Run the app
+
+```bash
+streamlit run app.py
+```
+
+On first run, the app will build a Chroma index in `./chroma_db` if it does not exist yet.
+
+## Deploy to Streamlit Cloud
+
+1. Deploy this repo as a Streamlit app (main file: `app.py`).
+2. Add `GROQ_API_KEY` in the app’s Secrets.
+3. Ensure the book text is available at `data/game_of_thrones.txt` (the repo ignores `data/*.txt` by default).
+
+The first cold start may take longer because the embedding model and the vector index are built/cached.
+
+## Optional: Ingest (pre-build the vector store)
 
 ```bash
 python ingest.py --input data/game_of_thrones.txt
 ```
 
 This creates a persisted Chroma DB in `./chroma_db` and prints how many chunks were created.
-
-## Run the CLI
-
-### With Ollama (recommended)
-
-Make sure Ollama is installed and running, then pull a model:
-
-```bash
-ollama pull llama3
-```
-
-Start the CLI:
-
-```bash
-python main.py --ollama-model llama3
-```
-
-### Without Ollama (dummy fallback)
-
-If you don't have local inference set up yet, you can still test retrieval:
-
-```bash
-python main.py --use-dummy-llm
-```
-
-This uses a simple extractive fallback over retrieved chunks (not a true generative answer).
 
 ## Query behavior
 
@@ -97,10 +104,10 @@ Queries matching:
 
 automatically retrieve **more chunks** (`k=7` by default) so the model has enough context for a coherent biography.
 
-Tune via flags:
+Tune in the Streamlit sidebar:
 
-- `--k 4` (default for normal questions)
-- `--bio-k 7` (default for biography questions)
+- `k (semantic)` (default 4)
+- `k (biography)` (default 7)
 
 ## Analytics mode (heuristic)
 
@@ -128,11 +135,9 @@ python count_names_spacy.py
 
 ## Troubleshooting
 
-- **`Chroma persistence directory not found`**
-  - Run ingestion first: `python ingest.py --input data/game_of_thrones.txt`
-- **Ollama errors / connection refused**
-  - Start Ollama and verify: `ollama list`
-  - Or run: `python main.py --use-dummy-llm`
+- **Missing `GROQ_API_KEY`**
+  - Set it in Streamlit Cloud secrets, or create `.streamlit/secrets.toml` locally.
+- **Chroma index issues**
+  - Delete `./chroma_db` and reload to rebuild, or run `python ingest.py --input data/game_of_thrones.txt`.
 - **Dependency import errors**
   - Reinstall: `python -m pip install -r requirements.txt`
-
