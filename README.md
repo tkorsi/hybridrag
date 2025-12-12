@@ -119,6 +119,7 @@ Examples:
 
 If `spacy` + `en_core_web_sm` are available, the app extracts and counts only `PERSON` entities.
 If spaCy isn't available, the app falls back to a lightweight regex heuristic.
+If spaCy is installed but the model is missing, the app attempts to download `en_core_web_sm` automatically on first analytics use.
 
 ### spaCy setup
 

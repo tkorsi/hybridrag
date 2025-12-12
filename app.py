@@ -168,27 +168,63 @@ def _spacy_installed() -> bool:
         return False
 
 
+@dataclass(frozen=True)
+class SpacyNlpResult:
+    nlp: Any | None
+    note: str | None = None
+
+
 @st.cache_resource(show_spinner="Loading spaCy NER model…")
-def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> Any:
+def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
     import spacy
+    from importlib.util import find_spec
 
     try:
-        return spacy.load(
+        nlp = spacy.load(
             model_name,
             disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
         )
-    except OSError as exc:
-        raise RuntimeError(
-            f"spaCy is installed, but the model '{model_name}' is missing.\n\n"
-            "Install it locally with:\n"
-            "  python -m spacy download en_core_web_sm\n\n"
-            "On Streamlit Cloud, ensure the model is available in the build environment."
-        ) from exc
+        return SpacyNlpResult(nlp=nlp)
+    except OSError:
+        # Most common: missing model package. Try to download it once (cached).
+        if find_spec(model_name) is None:
+            try:
+                from spacy.cli import download as spacy_download
+
+                spacy_download(model_name)
+            except BaseException as download_exc:  # includes SystemExit from CLI wrappers
+                return SpacyNlpResult(
+                    nlp=None,
+                    note=(
+                        f"spaCy model '{model_name}' is missing and auto-download failed: {download_exc}. "
+                        f"Install it with `python -m spacy download {model_name}`."
+                    ),
+                )
+
+        try:
+            nlp = spacy.load(
+                model_name,
+                disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
+            )
+            return SpacyNlpResult(nlp=nlp)
+        except Exception as load_exc:
+            return SpacyNlpResult(
+                nlp=None,
+                note=(
+                    f"spaCy model '{model_name}' could not be loaded after download attempt: {load_exc}. "
+                    f"Try `python -m spacy download {model_name}`."
+                ),
+            )
+    except Exception as exc:
+        return SpacyNlpResult(nlp=None, note=f"spaCy initialization failed: {exc}")
 
 
 def analyze_text_spacy(full_text: str) -> Counter[str]:
     """Count PERSON entity mentions using spaCy NER (preferred)."""
-    nlp = get_spacy_nlp()
+    nlp_result = get_spacy_nlp()
+    if nlp_result.nlp is None:
+        raise RuntimeError(nlp_result.note or "spaCy model unavailable.")
+    nlp = nlp_result.nlp
 
     counts_lower: Counter[str] = Counter()
     display_names: dict[str, str] = {}
@@ -250,7 +286,8 @@ def analyze_text(full_text: str) -> AnalyticsResult:
             return AnalyticsResult(
                 backend="Regex heuristic",
                 counts=analyze_text_regex_heuristic(full_text),
-                note=f"spaCy unavailable ({type(exc).__name__}). Install `spacy` + `{SPACY_MODEL_NAME}` for PERSON-only counts.",
+                note=str(exc)
+                or f"spaCy unavailable ({type(exc).__name__}). Install `spacy` + `{SPACY_MODEL_NAME}` for PERSON-only counts.",
             )
 
     return AnalyticsResult(
