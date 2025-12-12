@@ -177,7 +177,6 @@ class SpacyNlpResult:
 @st.cache_resource(show_spinner="Loading spaCy NER model…")
 def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
     import spacy
-    from importlib.util import find_spec
 
     try:
         nlp = spacy.load(
@@ -186,35 +185,13 @@ def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
         )
         return SpacyNlpResult(nlp=nlp)
     except OSError:
-        # Most common: missing model package. Try to download it once (cached).
-        if find_spec(model_name) is None:
-            try:
-                from spacy.cli import download as spacy_download
-
-                spacy_download(model_name)
-            except BaseException as download_exc:  # includes SystemExit from CLI wrappers
-                return SpacyNlpResult(
-                    nlp=None,
-                    note=(
-                        f"spaCy model '{model_name}' is missing and auto-download failed: {download_exc}. "
-                        f"Install it with `python -m spacy download {model_name}`."
-                    ),
-                )
-
-        try:
-            nlp = spacy.load(
-                model_name,
-                disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
-            )
-            return SpacyNlpResult(nlp=nlp)
-        except Exception as load_exc:
-            return SpacyNlpResult(
-                nlp=None,
-                note=(
-                    f"spaCy model '{model_name}' could not be loaded after download attempt: {load_exc}. "
-                    f"Try `python -m spacy download {model_name}`."
-                ),
-            )
+        return SpacyNlpResult(
+            nlp=None,
+            note=(
+                f"spaCy model '{model_name}' is not installed. "
+                f"Run `python preload.py` (recommended) or `python -m spacy download {model_name}`."
+            ),
+        )
     except Exception as exc:
         return SpacyNlpResult(nlp=None, note=f"spaCy initialization failed: {exc}")
 

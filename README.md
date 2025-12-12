@@ -66,6 +66,7 @@ GROQ_API_KEY="YOUR_KEY_HERE"
 ## Run the app
 
 ```bash
+python preload.py
 streamlit run app.py
 ```
 
@@ -76,6 +77,7 @@ On first run, the app will build a Chroma index in `./chroma_db` if it does not 
 1. Deploy this repo as a Streamlit app (main file: `app.py`).
 2. Add `GROQ_API_KEY` in the app’s Secrets.
 3. Ensure the book text is available at `data/game_of_thrones.txt` (the repo ignores `data/*.txt` by default).
+4. Run `python preload.py` before starting the app so `en_core_web_sm` is available for analytics.
 
 The first cold start may take longer because the embedding model and the vector index are built/cached.
 
@@ -119,7 +121,7 @@ Examples:
 
 If `spacy` + `en_core_web_sm` are available, the app extracts and counts only `PERSON` entities.
 If spaCy isn't available, the app falls back to a lightweight regex heuristic.
-If spaCy is installed but the model is missing, the app attempts to download `en_core_web_sm` automatically on first analytics use.
+If spaCy is installed but the model is missing, run `python preload.py` once to download `en_core_web_sm` before starting the app.
 
 ### spaCy setup
 
@@ -127,7 +129,7 @@ Install spaCy + the English model:
 
 ```bash
 python -m pip install spacy
-python -m spacy download en_core_web_sm
+python preload.py
 ```
 
 There is also an optional script:
@@ -138,7 +140,7 @@ It uses spaCy NER to count `PERSON` entities. To use it:
 
 ```bash
 python -m pip install spacy
-python -m spacy download en_core_web_sm
+python preload.py
 python count_names_spacy.py
 ```
 
