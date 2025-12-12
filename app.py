@@ -175,37 +175,36 @@ class SpacyNlpResult:
 
 
 @st.cache_resource(show_spinner="Loading spaCy NER model…")
-def get_spacy_nlp(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
+def load_spacy_model(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
     import spacy
 
-    try:
-        spacy_models_dir = Path(__file__).resolve().parent / "spacy_models"
-        if spacy_models_dir.exists():
-            spacy_models_dir_str = str(spacy_models_dir)
-            if spacy_models_dir_str not in sys.path:
-                sys.path.insert(0, spacy_models_dir_str)
+    disable = ["tagger", "parser", "attribute_ruler", "lemmatizer"]
 
-        nlp = spacy.load(
-            model_name,
-            disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
-        )
+    try:
+        # 1) Standard: load by installed package name.
+        nlp = spacy.load(model_name, disable=disable)
         return SpacyNlpResult(nlp=nlp)
-    except OSError:
-        return SpacyNlpResult(
-            nlp=None,
-            note=(
-                f"spaCy model '{model_name}' was not found. "
-                "Ensure it is available in the pre-built environment (installed) "
-                "or committed under `spacy_models/`."
-            ),
-        )
-    except Exception as exc:
-        return SpacyNlpResult(nlp=None, note=f"spaCy initialization failed: {exc}")
+    except Exception as name_exc:
+        # 2) Pre-built fallback: load from a local committed directory.
+        local_path = Path("./spacy_models") / model_name
+        try:
+            nlp = spacy.load(str(local_path), disable=disable)
+            return SpacyNlpResult(nlp=nlp, note=f"Loaded spaCy model from local path: {local_path}")
+        except Exception as path_exc:
+            return SpacyNlpResult(
+                nlp=None,
+                note=(
+                    f"spaCy model '{model_name}' could not be loaded.\n"
+                    f"- Tried package: spacy.load('{model_name}') -> {type(name_exc).__name__}: {name_exc}\n"
+                    f"- Tried path:    spacy.load('{local_path}') -> {type(path_exc).__name__}: {path_exc}\n"
+                    "Falling back to regex heuristic."
+                ),
+            )
 
 
 def analyze_text_spacy(full_text: str) -> Counter[str]:
     """Count PERSON entity mentions using spaCy NER (preferred)."""
-    nlp_result = get_spacy_nlp()
+    nlp_result = load_spacy_model()
     if nlp_result.nlp is None:
         raise RuntimeError(nlp_result.note or "spaCy model unavailable.")
     nlp = nlp_result.nlp
