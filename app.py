@@ -13,6 +13,7 @@ This app routes queries into two paths:
 from __future__ import annotations
 
 import sys
+import os
 
 # Streamlit Cloud may ship with an older system SQLite build, which can break Chroma.
 # If available, prefer the bundled `pysqlite3` (installed via `pysqlite3-binary`).
@@ -174,6 +175,18 @@ class SpacyNlpResult:
     note: str | None = None
 
 
+def find_spacy_model_path(base_path: str) -> str | None:
+    """Recursively search for a spaCy model root by locating `config.cfg`.
+
+    Some environments/vendor packaging can produce nested directories (e.g. versioned folders).
+    We treat the directory containing `config.cfg` as the model root for `spacy.load(path)`.
+    """
+    for root, _dirs, files in os.walk(base_path):
+        if "config.cfg" in files:
+            return root
+    return None
+
+
 @st.cache_resource(show_spinner="Loading spaCy NER model…")
 def load_spacy_model(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
     import spacy
@@ -186,17 +199,30 @@ def load_spacy_model(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
         return SpacyNlpResult(nlp=nlp)
     except Exception as name_exc:
         # 2) Pre-built fallback: load from a local committed directory.
-        local_path = f"./spacy_models/{model_name}"
+        base_path = f"./spacy_models/{model_name}"
+        discovered_path = find_spacy_model_path(base_path)
+        if not discovered_path:
+            return SpacyNlpResult(
+                nlp=None,
+                note=(
+                    f"spaCy model '{model_name}' could not be loaded.\n"
+                    f"- Tried package: spacy.load('{model_name}') -> {type(name_exc).__name__}: {name_exc}\n"
+                    f"- Tried path discovery under: {base_path} (no config.cfg found)\n"
+                    "Falling back to regex heuristic."
+                ),
+            )
+
         try:
-            nlp = spacy.load(local_path, disable=disable)
-            return SpacyNlpResult(nlp=nlp, note=f"Loaded spaCy model from local path: {local_path}")
+            nlp = spacy.load(discovered_path, disable=disable)
+            return SpacyNlpResult(nlp=nlp, note=f"Loaded spaCy model from local path: {discovered_path}")
         except Exception as path_exc:
             return SpacyNlpResult(
                 nlp=None,
                 note=(
                     f"spaCy model '{model_name}' could not be loaded.\n"
                     f"- Tried package: spacy.load('{model_name}') -> {type(name_exc).__name__}: {name_exc}\n"
-                    f"- Tried path:    spacy.load('{local_path}') -> {type(path_exc).__name__}: {path_exc}\n"
+                    f"- Found config at: {discovered_path}\n"
+                    f"- Tried path:    spacy.load('{discovered_path}') -> {type(path_exc).__name__}: {path_exc}\n"
                     "Falling back to regex heuristic."
                 ),
             )
