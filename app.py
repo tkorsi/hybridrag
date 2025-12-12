@@ -186,9 +186,9 @@ def load_spacy_model(model_name: str = SPACY_MODEL_NAME) -> SpacyNlpResult:
         return SpacyNlpResult(nlp=nlp)
     except Exception as name_exc:
         # 2) Pre-built fallback: load from a local committed directory.
-        local_path = Path("./spacy_models") / model_name
+        local_path = f"./spacy_models/{model_name}"
         try:
-            nlp = spacy.load(str(local_path), disable=disable)
+            nlp = spacy.load(local_path, disable=disable)
             return SpacyNlpResult(nlp=nlp, note=f"Loaded spaCy model from local path: {local_path}")
         except Exception as path_exc:
             return SpacyNlpResult(
